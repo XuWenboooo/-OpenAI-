@@ -123,6 +123,52 @@ def test_memory_injection():
     print("[OK] 记忆注入幂等去重")
 
 
+def test_replay_into_prefix():
+    """重放起点→缓存前缀：stateful 请求按 prev_id 重建完整前缀。"""
+    tmp = tempfile.mkdtemp()
+    gw = ProtocolGateway(GatewayConfig(mock=True, data_dir=tmp))
+    sid = "sess_replay"
+    gw.sessions.create_session(session_id=sid, task_id="t1")
+
+    # 模拟历史轮次：已存一条带完整消息的请求
+    hist_ir = IRRequest(
+        model="m",
+        system=[ContentBlock.text_block("系统设定")],
+        messages=[
+            IRMessage.text("user", "第一问"),
+            IRMessage.text("assistant", "第一答"),
+        ],
+    )
+    gw.sessions.append_turn(
+        sid, {"path": "/v1/messages", "request": hist_ir.to_dict()},
+        response_id="resp_hist",
+    )
+
+    # 新 stateful 请求：只带新轮 + previous_response_id
+    new_ir = IRRequest(model="m", messages=[IRMessage.text("user", "第二问")])
+    added = gw._apply_replay(new_ir, sid, {"previous_response_id": "resp_hist"})
+
+    assert added == 2, added
+    assert len(new_ir.messages) == 3, [m.plain_text() for m in new_ir.messages]
+    assert new_ir.messages[0].plain_text() == "第一问"
+    assert new_ir.messages[-1].plain_text() == "第二问"
+    print("[OK] 重放→缓存前缀（history 2 + 新 1 = 3）")
+
+
+def test_replay_noop_without_prev_id():
+    """无 prev_id 的 stateless 请求不触发重放（避免历史翻倍）。"""
+    tmp = tempfile.mkdtemp()
+    gw = ProtocolGateway(GatewayConfig(mock=True, data_dir=tmp))
+    sid = "sess_noreplay"
+    gw.sessions.create_session(session_id=sid)
+    hist_ir = IRRequest(model="m", messages=[IRMessage.text("user", "历史")])
+    gw.sessions.append_turn(sid, {"path": "/x", "request": hist_ir.to_dict()})
+    new_ir = IRRequest(model="m", messages=[IRMessage.text("user", "新")])
+    assert gw._apply_replay(new_ir, sid, {}) == 0
+    assert len(new_ir.messages) == 1
+    print("[OK] stateless 不重放")
+
+
 def test_sse_stream():
     """网关 SSE 流式透传（mock 上游）。"""
     from aiohttp.test_utils import TestClient, TestServer
@@ -173,6 +219,8 @@ if __name__ == "__main__":
     test_usage_parsing()
     test_breakpoint_layout()
     test_memory_injection()
+    test_replay_into_prefix()
+    test_replay_noop_without_prev_id()
     test_sse_stream()
     test_experiment_expectations()
     print("\nALL CORE TESTS PASSED")

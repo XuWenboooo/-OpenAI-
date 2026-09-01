@@ -21,7 +21,7 @@ from typing import Any, Optional
 from aiohttp import web
 
 from ..adapters.base import AdapterRegistry, registry
-from ..ir.schema import ContentBlock, IRResponse, IRUsage
+from ..ir.schema import ContentBlock, IRResponse, IRUsage, message_from_json
 from ..observability.metrics import MetricRecord, MetricsStore
 from ..state.store import SessionStore
 from .config import GatewayConfig
@@ -124,6 +124,11 @@ class ProtocolGateway:
                 if session and session.previous_response_id and not ir_req.extra.get("previous_response_id"):
                     ir_req.extra["previous_response_id"] = session.previous_response_id
 
+                # 重放起点→缓存前缀（方案 3.9 耦合点 1 / TRACK 04）：stateful 请求按
+                # previous_response_id 反查，从存储的历史轮次重建完整前缀；task-id 单键
+                # 兜底已保证可独立运行，此步仅对带 prev_id 的请求生效（避免 stateless 历史翻倍）。
+                self._apply_replay(ir_req, session_id, payload)
+
                 # 记忆注入（方案 3.9 / TRACK01）：session meta → IR system 尾部，文本幂等去重
                 self._inject_memories(ir_req, session)
 
@@ -212,6 +217,37 @@ class ProtocolGateway:
             return max(0, len(turns) - 1) * 120
         except Exception:  # noqa: BLE001
             return 0
+
+    def _apply_replay(self, ir_req: Any, session_id: str, payload: dict[str, Any]) -> int:
+        """重放起点→缓存前缀（TRACK 04 耦合点 1）。
+
+        仅对 stateful 请求（携带 previous_response_id）生效：按 prev_id 反查会话后，
+        从最近一次历史轮次存储的 IR 重建完整消息前缀，与当前新轮拼接。
+        这样缓存断点（断点3 = 历史静态段末 messages[-2]）才有意义的落点，且重复前缀稳定可命中。
+
+        stateless 客户端（OpenAI Chat）自行重放完整历史、不传 prev_id，网关不重复拼接。
+        """
+        prev_id = payload.get("previous_response_id") or (
+            payload.get("extra", {}) or {}
+        ).get("previous_response_id")
+        if not prev_id:
+            return 0
+        turns = self.sessions.get_replay_history(
+            session_id, mode=self.config.replay_mode, max_turns=self.config.replay_window
+        )
+        if not turns:
+            return 0
+        last = turns[-1]
+        try:
+            stored = json.loads(last.get("request_json") or "{}").get("request", {})
+            hist = stored.get("messages", [])
+        except (json.JSONDecodeError, ValueError):
+            return 0
+        if not hist:
+            return 0
+        history_msgs = [message_from_json(m) for m in hist]
+        ir_req.messages = history_msgs + ir_req.messages
+        return len(history_msgs)
 
     def _inject_memories(self, ir_req: Any, session: Any) -> int:
         """记忆注入（方案 3.9 / TRACK01）：把 session meta 的记忆块注入 IR system 尾部。

@@ -34,6 +34,11 @@ class GatewayConfig:
     #: 请求体上限（字节）
     max_body_bytes: int = 2 * 1024 * 1024
 
+    #: 重放窗口（方案 3.9 耦合点 1 / TRACK 04：重放起点决定缓存前缀）。
+    #: window = 只重放最近 N 轮（保护 20-block 回看窗口）；full = 全量重放（会突破窗口）。
+    replay_mode: str = "window"
+    replay_window: int = 20
+
     #: 数据目录（SQLite 埋点 + 会话）
     data_dir: str = "data"
 
