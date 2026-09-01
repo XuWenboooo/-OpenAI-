@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 运行产物（SQLite 埋点/会话库，可复现，不入库）
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# 调试残留
+_panel_*.txt
+_panel_*.log
+
+# WorkBuddy 项目私有数据（记忆/会话，不入库）
+.workbuddy/
+
+# 课程作业（可能含个人信息，默认不提交）
+犀牛鸟第一份作业.docx
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
