@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.adapters.anthropic import AnthropicAdapter
 from src.gateway.config import GatewayConfig
 from src.gateway.server import ProtocolGateway
+from src.experiments.run_experiments import session_boundary_snapshot
 from src.ir.schema import ContentBlock, IRMessage, IRRequest
 from src.observability.metrics import usage_from_anthropic, usage_from_openai
 from src.state.store import SessionStore
@@ -21,7 +22,7 @@ from src.state.store import SessionStore
 def test_state_store():
     """状态层：创建 / prev_id / task-id 单键兜底 / TTL 淘汰。"""
     tmp = tempfile.mkdtemp()
-    s = SessionStore(Path(tmp) / "sessions.db", default_ttl_hours=1)
+    s = SessionStore(Path(tmp) / "sessions.db", default_ttl_seconds=1, on_end="drop")
     sess = s.create_session(team_id="t1", agent_id="a1", task_id="task1")
     assert s.get_session(sess.session_id) is not None
 
@@ -30,8 +31,8 @@ def test_state_store():
     assert sess.session_id in s.query_by_prev_id("resp_1")
     assert s.find_active_by_task("task1").session_id == sess.session_id
 
-    # 立即过期的会话应被 TTL 淘汰
-    s2 = s.create_session(task_id="task_expired", ttl_hours=-1)
+    # 立即过期的会话应被 TTL 淘汰（on_end=drop 默认删除）
+    s2 = s.create_session(task_id="task_expired", ttl_seconds=-1)
     assert s.evict_expired() >= 1
     assert s.get_session(s2.session_id) is None
     print("[OK] state/store 状态层（prev_id / task-id 兜底 / TTL）")
@@ -213,6 +214,48 @@ def test_experiment_expectations():
     print("[OK] 实验预期断言（11 组全部符合）")
 
 
+def test_session_boundary_config_defaults():
+    """方案 3.9.1：Session 边界做成可切换配置，默认假设值对齐 v3(1) 第 13–14 页。"""
+    cfg = GatewayConfig()
+    assert cfg.session_key_granularity == "single_task"   # ① 标识粒度 = task-id 单键
+    assert cfg.session_replay_from == "full"             # ③ 重放起点 = 全量重放
+    assert cfg.session_end_policy == "ttl"               # ② 起止 = 超时淘汰
+    assert cfg.session_on_end == "archive"               # ② 结束后归档可回放
+    assert cfg.session_ttl_seconds == 1800
+    snap = session_boundary_snapshot()
+    assert "premise" in snap and "task-id 单键" in snap["premise"]
+    print("[OK] Session 边界配置默认假设值（single_task / full / ttl / archive）")
+
+
+def test_replay_history_modes():
+    """重放起点三模式：full / sliding_window / last_breakpoint。"""
+    tmp = tempfile.mkdtemp()
+    s = SessionStore(Path(tmp) / "s.db", default_ttl_seconds=9999, on_end="drop")
+    sid = s.create_session(session_id="r1").session_id
+    for i in range(5):
+        s.append_turn(sid, {"path": "/x", "request": {"messages": [{"role": "user", "content": f"m{i}"}]}})
+    full = s.get_replay_history(sid, mode="full")
+    window = s.get_replay_history(sid, mode="sliding_window", max_turns=2)
+    bp = s.get_replay_history(sid, mode="last_breakpoint")  # 无游标等同全量
+    assert len(full) == 5
+    assert len(window) == 2
+    assert len(bp) == 5
+    # last_breakpoint 带游标后只返回游标之后
+    s.set_replay_cursor(sid, 3)
+    assert len(s.get_replay_history(sid, mode="last_breakpoint")) == 2
+    print("[OK] 重放三模式（full / sliding_window / last_breakpoint）")
+
+
+def test_evict_archive_keeps_session():
+    """on_end=archive 时过期会话保留可回放（不删除）。"""
+    tmp = tempfile.mkdtemp()
+    s = SessionStore(Path(tmp) / "a.db", default_ttl_seconds=1, on_end="archive")
+    sid = s.create_session(task_id="keep", ttl_seconds=-1).session_id
+    assert s.evict_expired() == 0            # archive：不删，返回 0
+    assert s.get_session(sid) is not None    # 仍可回放
+    print("[OK] on_end=archive 保留过期会话")
+
+
 if __name__ == "__main__":
     test_state_store()
     test_warmup_validation()
@@ -223,4 +266,7 @@ if __name__ == "__main__":
     test_replay_noop_without_prev_id()
     test_sse_stream()
     test_experiment_expectations()
+    test_session_boundary_config_defaults()
+    test_replay_history_modes()
+    test_evict_archive_keeps_session()
     print("\nALL CORE TESTS PASSED")

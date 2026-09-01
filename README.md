@@ -77,7 +77,7 @@ python -m src.gateway.server --port 8096        # 不加 --mock 即真实模式
 
 - [x] TRACK 01 注入策略（L0–L3）已获取，作为实验输入（B/D1=L3 无条件注入，C/D2=L1/L2 按需召回）
 - [x] **工具 ID 映射表 + 能力矩阵 v0**（W1/W2 产出物，见 `docs/工具ID映射表与能力矩阵.md`）
-- [~] 向 TRACK 04 对齐 Session 边界（重放起点→缓存前缀 / 记忆回流幂等 / prev_id 状态键）：**代码侧已用 task-id 单键兜底实现，仅待参数层面签字确认**（TTL / 最大轮次 / 记忆上限；当前默认值 24h / 20 轮 / 无上限可独立运行）
+- [x] 向 TRACK 04 对齐 Session 边界（方案 3.9.1）：**已做成可切换配置**（`config.py` 三开关 `key_granularity` / `replay_from` / `end_policy` + 默认假设值 task-id 单键 / 全量重放 / ttl+archive）；04 口径变化只改配置不返工；实验前把配置快照写入 `data/session_boundary_snapshot.json` 与命中率数据绑死。仅待 04 在参数层面签字确认（当前默认可独立运行）
 - [ ] 分工会向导师确认自开仓库 PR 是否计入「开源提交 PR」考核口径；若只认上游 PR → fallback 向上游提最小可用 PR（当前代码已 push 到 master，尚未走 PR 评审）
 - [ ] 真实验证：D2 previous_response_id 冲突、20-block 窗口、各模型阈值表、count_tokens RTT、4096 档大块复测（需 API key）
 

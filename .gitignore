@@ -8,6 +8,9 @@ __pycache__/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+# 实验生成产物（每次 run_experiments 重生成；边界快照与结果 CSV 不入库，权威结论见 docs/量化取舍文档.md）
+data/*.csv
+data/*.json
 
 # 调试残留
 _panel_*.txt

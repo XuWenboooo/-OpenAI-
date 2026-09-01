@@ -34,10 +34,25 @@ class GatewayConfig:
     #: 请求体上限（字节）
     max_body_bytes: int = 2 * 1024 * 1024
 
-    #: 重放窗口（方案 3.9 耦合点 1 / TRACK 04：重放起点决定缓存前缀）。
-    #: window = 只重放最近 N 轮（保护 20-block 回看窗口）；full = 全量重放（会突破窗口）。
-    replay_mode: str = "window"
-    replay_window: int = 20
+    # ---------------------------------------------------------------------------
+    # Session 边界（方案 3.9.1 / TRACK 04：做成可切换配置，04 口径变化只改配置不返工）
+    # 默认假设值（v3(1) 第 13–14 页对照表；实验命中率结论均在此前提下陈述）：
+    #   ① 标识粒度 = task-id 单键
+    #   ② 起止定义 = 首次请求开始 / 超时或显式关闭结束 / 结束后归档可回放
+    #   ③ 重放起点 = 全量重放（最保守、最易被 04 组兼容）
+    # 切换链路：config(3 开关) → 状态层读配置取历史 → 重放起点策略 → 缓存前缀(命中率)
+    # 纪律：key_granularity 仅启动时读（中途切换会错乱已存键值）；replay_from/end_policy 可热切换
+    # ---------------------------------------------------------------------------
+    # ① 标识粒度：single_task（默认，task-id 单键）/ three_level（x-team-id+x-agent-id+x-task-id 组合键）
+    session_key_granularity: str = "single_task"
+    session_key_fields: list[str] = field(default_factory=lambda: ["task-id"])
+    # ③ 重放起点：full（全量）/ sliding_window（最近 N 条）/ last_breakpoint（上次断点之后）
+    session_replay_from: str = "full"
+    session_sliding_window_n: int = 20
+    # ② 起止定义：ttl（超时淘汰）/ explicit_close（显式关闭）；on_end：archive（保留可回放）/ drop（删除）
+    session_end_policy: str = "ttl"
+    session_ttl_seconds: int = 1800
+    session_on_end: str = "archive"
 
     #: 数据目录（SQLite 埋点 + 会话）
     data_dir: str = "data"

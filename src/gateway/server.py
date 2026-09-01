@@ -33,7 +33,12 @@ class ProtocolGateway:
         self.config = config or GatewayConfig()
         self.registry: AdapterRegistry = registry
         self.metrics = MetricsStore(self.config.metrics_db)
-        self.sessions = SessionStore(self.config.sessions_db)
+        self.sessions = SessionStore(
+            self.config.sessions_db,
+            default_ttl_seconds=self.config.session_ttl_seconds,
+            end_policy=self.config.session_end_policy,
+            on_end=self.config.session_on_end,
+        )
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         # 上游按外部 adapter 协议惰性创建（每个协议一个实例）
         self._upstreams: dict[str, Any] = {}
@@ -57,11 +62,18 @@ class ProtocolGateway:
 
     # ---- 会话状态 ----
     def _resolve_session(self, request: web.Request, payload: dict) -> Any:
-        """从请求头解析会话归属；OpenAI Response 用 previous_response_id 关联。"""
+        """从请求头解析会话归属；OpenAI Response 用 previous_response_id 关联。
+
+        key_granularity=three_level 时（方案 3.9.1 ①），按配置的 key_fields 从
+        x-<field> 头组合出会话键；single_task 时沿用既有 task-id 单键逻辑。
+        """
         team = request.headers.get("x-team-id")
         agent = request.headers.get("x-agent-id")
         task = request.headers.get("x-task-id")
         session_id = request.headers.get("x-session-id")
+
+        if self.config.session_key_granularity == "three_level":
+            return self._derive_three_level_key(request)
 
         prev_id = payload.get("previous_response_id") or payload.get("extra", {}).get(
             "previous_response_id"
@@ -75,6 +87,14 @@ class ProtocolGateway:
             s = self.sessions.create_session(team_id=team, agent_id=agent, task_id=task)
             session_id = s.session_id
         return session_id
+
+    def _derive_three_level_key(self, request: web.Request) -> str:
+        """three_level 标识粒度：按 session_key_fields 组合 x-<field> 头生成会话键。"""
+        parts = []
+        for field_name in self.config.session_key_fields:
+            val = request.headers.get(f"x-{field_name}") or request.headers.get(field_name)
+            parts.append(val or "_")
+        return "sess_" + "__".join(parts)
 
     # ---- 单请求处理 ----
     async def handle(self, request: web.Request) -> web.Response:
@@ -233,7 +253,9 @@ class ProtocolGateway:
         if not prev_id:
             return 0
         turns = self.sessions.get_replay_history(
-            session_id, mode=self.config.replay_mode, max_turns=self.config.replay_window
+            session_id,
+            mode=self.config.session_replay_from,
+            max_turns=self.config.session_sliding_window_n,
         )
         if not turns:
             return 0

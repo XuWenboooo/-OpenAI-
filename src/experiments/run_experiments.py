@@ -21,11 +21,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..gateway.upstream import MockUpstream
+from ..gateway.config import GatewayConfig
 from ..ir.schema import CACHE_LOOKBACK_WINDOW_BLOCKS, ContentBlock, IRMessage, IRRequest
 from ..observability.metrics import (
     WRITE_PREMIUM_1HOUR,
@@ -33,6 +35,25 @@ from ..observability.metrics import (
     MetricRecord,
     MetricsStore,
 )
+
+
+def session_boundary_snapshot() -> dict[str, Any]:
+    """方案 3.9.1 落地纪律①：实验前把 Session 边界配置完整快照，与命中率数据绑死。
+
+    保证「这组数据是在什么边界下测的」可回溯；04 组口径变化只改配置、重跑即可对比。
+    """
+    cfg = GatewayConfig()
+    return {
+        "session_key_granularity": cfg.session_key_granularity,
+        "session_key_fields": cfg.session_key_fields,
+        "session_replay_from": cfg.session_replay_from,
+        "session_sliding_window_n": cfg.session_sliding_window_n,
+        "session_end_policy": cfg.session_end_policy,
+        "session_ttl_seconds": cfg.session_ttl_seconds,
+        "session_on_end": cfg.session_on_end,
+        "premise": "命中率结论均在 Session 边界 = {task-id 单键，全量重放} 前提下陈述；"
+                   "边界口径以 TRACK 04 最终设计为准",
+    }
 
 
 def memory_text(n_tokens: int, seed: str) -> str:
@@ -311,6 +332,14 @@ async def main() -> None:
     args = parser.parse_args()
 
     print(f"=== M5 对照实验（mock 上游，每组 {args.rounds} 轮）===")
+    snapshot = session_boundary_snapshot()
+    # 落地纪律①：把 Session 边界配置快照与命中率数据绑死（保证可回溯）
+    snap_path = str(Path(args.data_dir) / "session_boundary_snapshot.json")
+    Path(snap_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(snap_path, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False, indent=2)
+    print(f"[Session 边界快照] {snap_path}")
+    print(f"  {json.dumps(snapshot, ensure_ascii=False)}")
     runner = ExperimentRunner(
         rounds=args.rounds, data_dir=args.data_dir, min_cache_tokens=args.mock_min_cache
     )
