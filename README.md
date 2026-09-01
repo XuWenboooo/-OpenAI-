@@ -19,10 +19,10 @@ OpenAI Response (05B) ──adapter──┼──▶ IR 中间表示（唯一�
 - **IR v0**：`src/ir/schema.py`（L0 内容块 / L1 规范请求 / L2 会话缓存上下文；4 断点上限 + 20-block 回看窗口），契约见 `docs/ir-schema.md`
 - **3 对 adapter**：`src/adapters/`（chat / response / anthropic），6 个方向压成 3；含 `ir_to_payload`（IR→上游请求，Anthropic 侧渲染 cache_control 4 断点布局）与 `response_to_ir`
 - **命中率埋点**：`src/observability/metrics.py`（北极星指标：cache_read 命中率；方案 3.3 五项可观测性；OpenAI 折扣按模型代次）
-- **状态层**：`src/state/store.py`（SQLite 会话表 + TTL + previous_response_id + TRACK04 单键兜底）
-- **网关**：`src/gateway/server.py`（HTTP 转发 + SSE 透传 + 记忆注入（幂等去重）+ 限流 + 预热请求单独路径 + 拒绝条件校验）
+- **状态层**：`src/state/store.py`（SQLite 会话表 + TTL + previous_response_id + TRACK04 单键兜底 + 会话级 `memory_cap` 落库）
+- **网关**：`src/gateway/server.py`（HTTP 转发 + SSE 透传 + 记忆注入（幂等去重 + `session_memory_cap` 上限：全局默认 0=不限制，会话级可经弹网页覆盖）+ 限流 + 预热请求单独路径 + 拒绝条件校验）
 - **实验**：`src/experiments/run_experiments.py`（更新频率 × 位置 × 粒度 × 模型阈值，11 组对照，先预热再计量）
-- **编排面板**：`src/webpanel/app.py`（Session init 上下文编排 + 缓存前缀可视化；绑 127.0.0.1 / 随机端口 / Host 校验 / 一次性 token / 记忆脱敏）
+- **编排面板**：`src/webpanel/app.py`（Session init 上下文编排 + 缓存前缀可视化 + **经弹网页链接新建会话** `POST /api/session/init`（可设 team/agent/task 与记忆上限）；绑 127.0.0.1 / 随机端口 / Host 校验 / 一次性 token / 记忆脱敏）
 
 ## 快速开始
 
@@ -77,7 +77,7 @@ python -m src.gateway.server --port 8096        # 不加 --mock 即真实模式
 
 - [x] TRACK 01 注入策略（L0–L3）已获取，作为实验输入（B/D1=L3 无条件注入，C/D2=L1/L2 按需召回）
 - [x] **工具 ID 映射表 + 能力矩阵 v0**（W1/W2 产出物，见 `docs/工具ID映射表与能力矩阵.md`）
-- [x] 向 TRACK 04 对齐 Session 边界（方案 3.9.1）：**已做成可切换配置**（`config.py` 三开关 `key_granularity` / `replay_from` / `end_policy` + 默认假设值 task-id 单键 / 全量重放 / ttl+archive）；04 口径变化只改配置不返工；实验前把配置快照写入 `data/session_boundary_snapshot.json` 与命中率数据绑死。仅待 04 在参数层面签字确认（当前默认可独立运行）
+- [x] 向 TRACK 04 对齐 Session 边界（方案 3.9.1）：**已做成可切换配置**（`config.py` 三开关 `key_granularity` / `replay_from` / `end_policy` + 默认假设值 task-id 单键 / 全量重放 / ttl+archive）；实验前把配置快照写入 `data/session_boundary_snapshot.json` 与命中率数据绑死。**第三参数「记忆上限」也已做成开关**（`config.session_memory_cap` 全局默认 0=不限制，会话级 `meta.memory_cap` 可经弹网页 Session Init 设置），三参数现已全部可配置、可签字。仅待 04 在参数层面签字确认（当前默认可独立运行）
 - [ ] 分工会向导师确认自开仓库 PR 是否计入「开源提交 PR」考核口径；若只认上游 PR → fallback 向上游提最小可用 PR（当前代码已 push 到 master，尚未走 PR 评审）
 - [ ] 真实验证：D2 previous_response_id 冲突、20-block 窗口、各模型阈值表、count_tokens RTT、4096 档大块复测（需 API key）
 
@@ -88,3 +88,4 @@ python -m src.gateway.server --port 8096        # 不加 --mock 即真实模式
 - `docs/工具ID映射表与能力矩阵.md`：三协议工具 ID 对齐 + 能力矩阵 v0（W1/W2）
 - `docs/完成度评测报告.md`：逐模块完成度评测与待办清单
 - `docs/评审综述.md`：功能 / 完成度 / 不足之处 评审综述
+- `docs/TRACK04_签字确认稿.md`：TRACK 04 Session 边界三参数（TTL / 最大轮次 / 记忆上限）本地验证证据 + 边界快照 + 待导师签字栏
