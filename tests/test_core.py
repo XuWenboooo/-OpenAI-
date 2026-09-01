@@ -124,6 +124,61 @@ def test_memory_injection():
     print("[OK] 记忆注入幂等去重")
 
 
+def test_memory_cap_limits_injection():
+    """TRACK 04 第三参数（记忆上限）：达到上限即停止注入。
+
+    有效上限优先级：会话 meta.memory_cap > 全局 config.session_memory_cap > 0(不限制)。
+    """
+    tmp = tempfile.mkdtemp()
+
+    # ① 全局配置上限：config.session_memory_cap=2，5 条记忆只注入 2 条
+    gw = ProtocolGateway(GatewayConfig(mock=True, data_dir=tmp, session_memory_cap=2))
+    sid = "sess_cap_cfg"
+    gw.sessions.create_session(session_id=sid)
+    gw.sessions.update_meta(sid, {"memories": [
+        {"id": f"m{i}", "content": f"记忆{i}"} for i in range(5)
+    ]})
+    sess = gw.sessions.get_session(sid)
+    ir = IRRequest(model="m", system=[], messages=[])
+    assert gw._inject_memories(ir, sess) == 2, "全局上限应只注入 2 条"
+
+    # ② 会话级覆盖：meta.memory_cap=1 优先于全局 2
+    gw2 = ProtocolGateway(GatewayConfig(mock=True, data_dir=tmp, session_memory_cap=2))
+    sid2 = "sess_cap_per"
+    gw2.sessions.create_session(session_id=sid2, memory_cap=1)
+    # 真实用法：在已有 meta（含 memory_cap）上合并 memories，不覆盖
+    meta2 = dict(gw2.sessions.get_session(sid2).meta or {})
+    meta2["memories"] = [{"id": f"m{i}", "content": f"记忆{i}"} for i in range(5)]
+    gw2.sessions.update_meta(sid2, meta2)
+    sess2 = gw2.sessions.get_session(sid2)
+    ir2 = IRRequest(model="m", system=[], messages=[])
+    assert gw2._inject_memories(ir2, sess2) == 1, "会话级上限应只注入 1 条"
+
+    # ③ 默认 0 = 不限制：注入全部 5 条
+    gw3 = ProtocolGateway(GatewayConfig(mock=True, data_dir=tmp))  # session_memory_cap 默认 0
+    sid3 = "sess_cap_unlim"
+    gw3.sessions.create_session(session_id=sid3)
+    gw3.sessions.update_meta(sid3, {"memories": [
+        {"id": f"m{i}", "content": f"记忆{i}"} for i in range(5)
+    ]})
+    sess3 = gw3.sessions.get_session(sid3)
+    ir3 = IRRequest(model="m", system=[], messages=[])
+    assert gw3._inject_memories(ir3, sess3) == 5, "默认 0 应注入全部"
+    print("[OK] 记忆上限（全局/会话级/不限制 三档）")
+
+
+def test_create_session_memory_cap_persist():
+    """create_session(memory_cap=...) 写入 meta，落库后可回读。"""
+    tmp = tempfile.mkdtemp()
+    s = SessionStore(Path(tmp) / "cap.db")
+    sid = s.create_session(team_id="t", task_id="k1", memory_cap=3).session_id
+    assert (s.get_session(sid).meta or {}).get("memory_cap") == 3
+    # 不传则 meta 无 memory_cap（回退全局）
+    sid2 = s.create_session(task_id="k2").session_id
+    assert "memory_cap" not in (s.get_session(sid2).meta or {})
+    print("[OK] create_session(memory_cap) 落库回读")
+
+
 def test_replay_into_prefix():
     """重放起点→缓存前缀：stateful 请求按 prev_id 重建完整前缀。"""
     tmp = tempfile.mkdtemp()
@@ -222,9 +277,11 @@ def test_session_boundary_config_defaults():
     assert cfg.session_end_policy == "ttl"               # ② 起止 = 超时淘汰
     assert cfg.session_on_end == "archive"               # ② 结束后归档可回放
     assert cfg.session_ttl_seconds == 1800
+    assert cfg.session_memory_cap == 0                    # ③ 记忆上限默认 0 = 不限制
     snap = session_boundary_snapshot()
     assert "premise" in snap and "task-id 单键" in snap["premise"]
-    print("[OK] Session 边界配置默认假设值（single_task / full / ttl / archive）")
+    assert snap["session_memory_cap"] == 0
+    print("[OK] Session 边界配置默认假设值（single_task / full / ttl / archive / cap=0）")
 
 
 def test_replay_history_modes():
@@ -256,6 +313,41 @@ def test_evict_archive_keeps_session():
     print("[OK] on_end=archive 保留过期会话")
 
 
+def test_webpanel_session_init():
+    """弹网页 Session Init 路由：经链接创建会话并写入记忆上限。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from src.webpanel.app import SessionPanelApp
+
+    async def run():
+        tmp = tempfile.mkdtemp()
+        panel = SessionPanelApp(data_dir=tmp)
+        client = TestClient(TestServer(panel.build_app()))
+        await client.start_server()
+        try:
+            # 经弹网页链接创建会话（记忆上限=2）
+            resp = await client.post(
+                "/api/session/init",
+                headers={"X-Auth-Token": panel.token},
+                json={"team_id": "t1", "agent_id": "a1", "task_id": "k1", "memory_cap": 2},
+            )
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+            assert data["memory_cap"] == 2
+            sid = data["session_id"]
+            # 回读：会话 meta 含 memory_cap=2
+            s = panel.sessions.get_session(sid)
+            assert (s.meta or {}).get("memory_cap") == 2
+            # 列表接口也能看到该会话
+            lst = await client.get("/api/sessions", headers={"X-Auth-Token": panel.token})
+            ids = [x["session_id"] for x in await lst.json()]
+            assert sid in ids
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    print("[OK] 弹网页 Session Init 路由（创建会话 + 记忆上限落库）")
+
+
 if __name__ == "__main__":
     test_state_store()
     test_warmup_validation()
@@ -269,4 +361,7 @@ if __name__ == "__main__":
     test_session_boundary_config_defaults()
     test_replay_history_modes()
     test_evict_archive_keeps_session()
+    test_memory_cap_limits_injection()
+    test_create_session_memory_cap_persist()
+    test_webpanel_session_init()
     print("\nALL CORE TESTS PASSED")

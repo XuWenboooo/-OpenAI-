@@ -277,10 +277,14 @@ class ProtocolGateway:
         幂等去重：按文本去重——外部请求（如 MemoryProxy）若已注入相同文本则跳过，
         避免同一段记忆重复注入、重复计费（方案 3.9 耦合点 2）。
         L3 无条件注入语义：每轮注入相同稳定内容 → 前缀稳定 → 应命中缓存。
+
+        记忆上限（TRACK 04 第三参数）：有效上限 = 会话 meta.memory_cap > 全局
+        config.session_memory_cap > 0(不限制)；达到上限即停止注入（保留已注入的稳定前缀）。
         """
         memories = (session.meta or {}).get("memories") if session else []
         if not memories:
             return 0
+        cap = self._effective_memory_cap(session)
         seen = {b.text for b in ir_req.system
                 if getattr(b, "type", "") == "text" and b.text}
         added = 0
@@ -288,11 +292,21 @@ class ProtocolGateway:
             if not isinstance(m, dict):
                 continue
             text = (m.get("content") or m.get("preview") or "").strip()
-            if text and text not in seen:
-                ir_req.system.append(ContentBlock.text_block(text))
-                seen.add(text)
-                added += 1
+            if not text or text in seen:
+                continue  # 跳过空/已注入文本，不计入上限
+            if cap and added >= cap:
+                break
+            ir_req.system.append(ContentBlock.text_block(text))
+            seen.add(text)
+            added += 1
         return added
+
+    def _effective_memory_cap(self, session: Any) -> int:
+        """记忆上限有效值（TRACK 04 第三参数）：会话级 > 全局默认 > 0(不限制)。"""
+        per = (session.meta or {}).get("memory_cap") if session else None
+        if per:
+            return int(per)
+        return self.config.session_memory_cap
 
     def _finish_turn(
         self,

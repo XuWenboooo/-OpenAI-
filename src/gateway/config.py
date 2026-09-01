@@ -53,6 +53,10 @@ class GatewayConfig:
     session_end_policy: str = "ttl"
     session_ttl_seconds: int = 1800
     session_on_end: str = "archive"
+    # ③ 记忆上限（TRACK 04 第三参数 / 老师方向：经弹网页 Session Init 链接按会话设置）
+    #   0 = 不限制（全部注入，保持现状）；>0 时限制单会话注入记忆块数（与 _inject_memories 幂等去重配合）。
+    #   有效上限优先级：会话 meta.memory_cap > 本全局默认 > 0(不限制)。
+    session_memory_cap: int = 0
 
     #: 数据目录（SQLite 埋点 + 会话）
     data_dir: str = "data"

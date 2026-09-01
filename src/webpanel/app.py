@@ -91,6 +91,18 @@ PAGE_HTML = """<!DOCTYPE html>
     <h2>会话列表</h2>
     <div id="sessions"></div>
   </div>
+  <div class="panel">
+    <h2>新建会话 · Session Init（经弹网页链接初始化，可设记忆上限）</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div><div class="hint">team_id</div><input id="ni_team" style="padding:6px 8px;border:1px solid #E4E3DD;border-radius:6px;"></div>
+      <div><div class="hint">agent_id</div><input id="ni_agent" style="padding:6px 8px;border:1px solid #E4E3DD;border-radius:6px;"></div>
+      <div><div class="hint">task_id</div><input id="ni_task" style="padding:6px 8px;border:1px solid #E4E3DD;border-radius:6px;"></div>
+      <div><div class="hint">记忆上限(0=不限制)</div><input id="ni_cap" value="0" style="width:96px;padding:6px 8px;border:1px solid #E4E3DD;border-radius:6px;"></div>
+      <button id="initBtn">创建会话</button>
+    </div>
+    <div class="hint">会话创建后即出现在上方列表；记忆上限由网关在注入时按此值截断（0 = 全部注入）。这正是 TRACK 04「记忆上限」参数的落地入口（老师方向：session init 走弹网页链接）。</div>
+  </div>
+
 </main>
 <script>
 var currentId = null;
@@ -142,11 +154,31 @@ function renderMemories(mems){
 function renderSessions(sessions, active){
   el('sessions').innerHTML = sessions.map(function(s){
     var cls = 'sess' + (s.session_id===active ? ' active' : '');
+    var cap = (s.meta && s.meta.memory_cap) ? s.meta.memory_cap : '∞';
     return '<div class="'+cls+'" onclick="loadSession(\''+s.session_id+'\')">'+
            '<span class="tag">'+s.session_id.slice(0,8)+'</span>'+
            'prev_id='+(s.previous_response_id||'-').slice(0,16)+
-           ' · team='+(s.team_id||'-')+' · agent='+(s.agent_id||'-')+'</div>';
+           ' · team='+(s.team_id||'-')+' · agent='+(s.agent_id||'-')+
+           ' · cap='+cap+'</div>';
   }).join('') || '<div class="hint">暂无会话（先通过网关发请求，或运行 M5 实验生成数据）</div>';
+}
+
+async function initSession(){
+  var cap = parseInt(el('ni_cap').value||'0',10);
+  if(isNaN(cap)||cap<0) cap = 0;
+  var body = {
+    team_id: el('ni_team').value || null,
+    agent_id: el('ni_agent').value || null,
+    task_id: el('ni_task').value || null,
+    memory_cap: cap
+  };
+  var r = await api('/api/session/init', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  alert('已创建会话：'+r.session_id+'（记忆上限='+(r.memory_cap||0)+'）');
+  var s = await api('/api/sessions');
+  renderSessions(s, r.session_id);
 }
 
 async function loadSession(id){
@@ -180,6 +212,7 @@ async function init(){
     alert('已裁剪。保留记忆块：'+r.keep_count+'，裁剪掉：'+r.removed_count);
     loadSession(currentId);
   });
+  el('initBtn').addEventListener('click', initSession);
 }
 init();
 </script>
@@ -293,6 +326,7 @@ class SessionPanelApp:
         app.router.add_get("/api/sessions", self.api_sessions)
         app.router.add_get("/api/session/{id}", self.api_session)
         app.router.add_post("/api/session/{id}/prune", self.api_prune)
+        app.router.add_post("/api/session/init", self.api_init)
         app.router.add_get("/api/metrics/summary", self.api_metrics)
         return app
 
@@ -341,6 +375,28 @@ class SessionPanelApp:
         return web.json_response(
             {"keep_count": len(kept), "removed_count": removed,
              "note": "已更新会话记忆；下次请求将按新前缀缓存"}
+        )
+
+    async def api_init(self, request: web.Request) -> web.Response:
+        """经弹网页链接初始化会话（老师方向：session init 走弹网页）。
+
+        可同时设置该会话的记忆上限（TRACK 04 第三参数）：memory_cap=0 表示不限制，
+        >0 限制单会话注入记忆块数；不传则回退到全局 config.session_memory_cap。
+        """
+        body = await request.json()
+        cap = body.get("memory_cap")
+        sess = self.sessions.create_session(
+            team_id=body.get("team_id") or None,
+            agent_id=body.get("agent_id") or None,
+            task_id=body.get("task_id") or None,
+            memory_cap=cap,
+        )
+        return web.json_response(
+            {
+                "session_id": sess.session_id,
+                "memory_cap": (sess.meta or {}).get("memory_cap", 0) or 0,
+                "note": "会话已创建；记忆上限将由网关在注入时按此值截断",
+            }
         )
 
     async def api_metrics(self, request: web.Request) -> web.Response:

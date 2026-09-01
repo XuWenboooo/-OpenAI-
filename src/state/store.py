@@ -114,12 +114,17 @@ class SessionStore:
         task_id: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
         session_id: Optional[str] = None,
+        memory_cap: Optional[int] = None,
     ) -> Session:
         """创建会话。身份三者齐全可「直接登记」（作业 5.2 踩坑 4）。
 
         TRACK 04 对齐（方案 3.9 兜底）：若 04 组尚未定 Session 标识粒度，
         先按 task-id 单键假设推进——调用方可用 find_active_by_task 复用同 task 会话，
         避免另造一套 Session 概念（耦合点 3：previous_response_id 状态键复用 04 标识）。
+
+        memory_cap（TRACK 04 第三参数 / 老师方向：经弹网页 Session Init 链接按会话设置）：
+          传入则写入会话 meta（0 = 不限制，>0 限制单会话注入记忆块数）；不传则不写入，
+          由网关回退到全局 config.session_memory_cap。
         """
         sid = session_id or f"sess_{uuid.uuid4().hex[:12]}"
         now = utcnow_iso()
@@ -127,20 +132,24 @@ class SessionStore:
         expires = time.strftime(
             "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + ttl)
         )
+        meta: dict[str, Any] = {}
+        if memory_cap is not None:
+            meta["memory_cap"] = memory_cap
         conn = self._connect()
         try:
             conn.execute(
                 """INSERT INTO sessions
-                   (session_id, team_id, agent_id, task_id, created_at, updated_at, expires_at)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (sid, team_id, agent_id, task_id, now, now, expires),
+                   (session_id, team_id, agent_id, task_id, meta, created_at, updated_at, expires_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (sid, team_id, agent_id, task_id, json.dumps(meta, ensure_ascii=False),
+                 now, now, expires),
             )
             conn.commit()
         finally:
             conn.close()
         return Session(
             session_id=sid, team_id=team_id, agent_id=agent_id,
-            task_id=task_id, created_at=now, updated_at=now, expires_at=expires,
+            task_id=task_id, meta=meta, created_at=now, updated_at=now, expires_at=expires,
         )
 
     def get_session(self, session_id: str) -> Optional[Session]:

@@ -51,6 +51,7 @@ def session_boundary_snapshot() -> dict[str, Any]:
         "session_end_policy": cfg.session_end_policy,
         "session_ttl_seconds": cfg.session_ttl_seconds,
         "session_on_end": cfg.session_on_end,
+        "session_memory_cap": cfg.session_memory_cap,
         "premise": "命中率结论均在 Session 边界 = {task-id 单键，全量重放} 前提下陈述；"
                    "边界口径以 TRACK 04 最终设计为准",
     }
