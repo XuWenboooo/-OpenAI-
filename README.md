@@ -4,7 +4,7 @@
 
 ### OpenAI ↔ Anthropic protocol interoperability with state, memory, and cache observability
 
-[![CI](https://github.com/XuWenboooo/-OpenAI-/actions/workflows/ci.yml/badge.svg)](https://github.com/XuWenboooo/-OpenAI-/actions/workflows/ci.yml)
+[![CI](https://github.com/XuWenboooo/protocol-converter/actions/workflows/ci.yml/badge.svg)](https://github.com/XuWenboooo/protocol-converter/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-Apache--2.0-6f42c1)
 ![Focus](https://img.shields.io/badge/Focus-LLM%20Systems-8250df)
