@@ -6,6 +6,7 @@
 
 [![CI](https://github.com/XuWenboooo/-OpenAI-/actions/workflows/ci.yml/badge.svg)](https://github.com/XuWenboooo/-OpenAI-/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/License-Apache--2.0-6f42c1)
 ![Focus](https://img.shields.io/badge/Focus-LLM%20Systems-8250df)
 ![Architecture](https://img.shields.io/badge/Architecture-IR%20%2B%20Gateway-0969da)
 
@@ -19,7 +20,7 @@
 
 Modern LLM applications are often coupled to one provider's request format, conversation model, caching semantics, and state behavior. This project explores a different design:
 
-> **Put protocol differences behind a stable intermediate representation, then make state, memory, and cache behavior observable.**
+> **Put protocol differences behind a stable intermediate representation, then make state, memory, degradation, and cache behavior observable.**
 
 The goal is not only to translate JSON payloads. The system also asks a systems question:
 
@@ -40,6 +41,7 @@ The goal is not only to translate JSON payloads. The system also asks a systems 
 - Anthropic Messages adapter
 - Unified IR as the protocol contract
 - Request / response conversion in both directions
+- Explicit tracking of dropped / degraded fields
 
 </td>
 <td width="50%" valign="top">
@@ -60,10 +62,10 @@ The goal is not only to translate JSON payloads. The system also asks a systems 
 ### 📊 Cache observability
 
 - Cache-read hit-rate instrumentation
-- Provider usage parsing
+- Provider usage normalization
 - Warm-up requests separated from measured requests
 - Controlled memory × cache experiments
-- Reproducible experiment snapshots
+- Reproducible experiment assumptions
 
 </td>
 <td width="50%" valign="top">
@@ -110,11 +112,13 @@ flowchart LR
 | `src/experiments/run_experiments.py` | Controlled memory × cache experiments |
 | `src/webpanel/app.py` | Local session/orchestration UI |
 
+For a fuller component and request-lifecycle view, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ---
 
 ## Quick start
 
-### 1. Install
+### 1. Runtime install
 
 ```bash
 python -m venv .venv
@@ -124,9 +128,15 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+For development / testing:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 ### 2. Configure keys only when using real upstreams
 
-Copy `.env.example` or export environment variables in your shell.
+Use `.env.example` as a template or export environment variables in your shell.
 
 ```text
 OPENAI_API_KEY=
@@ -167,7 +177,46 @@ python -m src.webpanel.app --port 0
 pytest tests/ -q
 ```
 
-The repository contains adapter, core, and gateway test suites under `tests/`.
+CI runs the same suite on Python 3.11 and 3.12.
+
+---
+
+## Experiment focus: memory injection × KV cache
+
+The experimental layer varies:
+
+- memory update frequency
+- injection position
+- memory granularity
+- provider/model cache thresholds
+- warm-up versus measured requests
+
+The practical systems trade-off is:
+
+```text
+more injected context
+        │
+        ├── potentially better task memory
+        │
+        └── potentially lower cache reuse / higher cost / higher latency
+```
+
+### Controlled offline result snapshot
+
+> **Evidence level: CONTROLLED_EXPERIMENT / MOCK** — these are offline controlled results, not current production-provider measurements.
+
+| Strategy | Cache hit rate | Estimated measured cost | Interpretation |
+|---|---:|---:|---|
+| no-memory baseline | 100% | $0.0200 | stable prefix after warm-up |
+| inject once at session start | 100% | $0.0233 | preferred stable-memory strategy under tested assumptions |
+| dynamic injection every turn | 0% | $0.0422 | prefix instability eliminates cache reuse in the model |
+| stable prefix placement | 100% | $0.0233 | semantically preferred placement |
+
+The full experiment includes additional granularity and threshold groups. See:
+
+- [`docs/RESULTS_SUMMARY.md`](docs/RESULTS_SUMMARY.md) — concise experiment summary
+- [`docs/量化取舍文档.md`](docs/量化取舍文档.md) — full quantitative analysis
+- [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) — evidence levels and reproduction protocol
 
 ---
 
@@ -184,43 +233,26 @@ python -m src.gateway.server --port 8096
 
 For an OpenAI upstream, use `OPENAI_API_KEY` with the gateway's OpenAI upstream option.
 
----
+### Evidence boundary
 
-## Experiment focus: memory injection × KV cache
+Offline tests and mock experiments validate repository behavior under controlled assumptions. They do **not** automatically prove that current provider APIs, pricing, cache thresholds, or undocumented behavior remain unchanged.
 
-The experimental layer varies factors such as:
-
-- memory update frequency
-- injection position
-- memory granularity
-- provider/model cache thresholds
-- warm-up versus measured requests
-
-The aim is to quantify a practical systems trade-off:
-
-```text
-more injected context
-        │
-        ├── potentially better task memory
-        │
-        └── potentially lower cache reuse / higher cost / higher latency
-```
-
-The main written analysis is maintained in:
-
-- `docs/量化取舍文档.md`
+Real-provider claims should carry a validation date and model/API context.
 
 ---
 
 ## Engineering and security choices
 
-This repository intentionally keeps several operational boundaries explicit:
+This repository intentionally keeps operational boundaries explicit:
 
 - API keys are read from environment variables rather than source code
 - `.env` and local runtime state are excluded from version control
 - the local panel binds to loopback and uses Host validation / a one-time token
 - mock mode allows protocol behavior to be tested without provider credentials
-- experiment outputs are separated from the source tree's authoritative documentation
+- lossy protocol behavior should be visible instead of silently hidden
+- experiment outputs are separated from source-controlled authoritative documentation
+
+See [`SECURITY.md`](SECURITY.md) for threat-model notes and vulnerability-reporting guidance.
 
 ---
 
@@ -236,46 +268,51 @@ This repository intentionally keeps several operational boundaries explicit:
 | Controlled experiment layer | ✅ Implemented |
 | Local orchestration panel | ✅ Implemented |
 | Automated tests | ✅ Present |
-| GitHub Actions CI | 🧪 Being introduced through repository refactoring |
-| Real-provider validation matrix | 🚧 Requires provider credentials / further verification |
+| GitHub Actions CI | ✅ Python 3.11 / 3.12 |
+| Dev / runtime dependency split | ✅ |
+| Security guidance | ✅ |
+| Contribution workflow | ✅ |
+| Reproducibility guide | ✅ |
+| Real-provider validation matrix | 🚧 Requires provider credentials / dated verification |
 
-### Remaining validation work
+### Remaining external-validation work
 
-- `previous_response_id` conflict behavior
-- 20-block history-window behavior
+- `previous_response_id` conflict behavior against current provider APIs
+- long-history / cache-window behavior
 - provider/model threshold table validation
 - `count_tokens` RTT measurements
 - large-block cache threshold re-tests
 
 ---
 
-## Documentation
+## Repository workflow
 
-- `docs/量化取舍文档.md` — memory injection × KV-cache quantitative trade-off
-- `docs/ir-schema.md` — IR contract
-- `docs/工具ID映射表与能力矩阵.md` — tool ID mapping and capability matrix
-- `docs/完成度评测报告.md` — completion evaluation
-- `docs/评审综述.md` — functional/review summary
-- `docs/TRACK04_签字确认稿.md` — session-boundary configuration evidence
+Contributions should use short-lived branches and pull requests. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+CI is expected to pass before merge. Protocol or experiment changes should document any lossy conversion, changed cache semantics, or altered experimental assumptions.
+
+---
+
+## Documentation index
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system architecture and request lifecycle
+- [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) — clean-environment reproduction and evidence levels
+- [`docs/RESULTS_SUMMARY.md`](docs/RESULTS_SUMMARY.md) — compact experiment results
+- [`docs/量化取舍文档.md`](docs/量化取舍文档.md) — memory injection × KV-cache quantitative trade-off
+- [`docs/ir-schema.md`](docs/ir-schema.md) — IR contract
+- [`docs/工具ID映射表与能力矩阵.md`](docs/工具ID映射表与能力矩阵.md) — tool ID mapping and capability matrix
+- [`docs/完成度评测报告.md`](docs/完成度评测报告.md) — completion evaluation
+- [`docs/评审综述.md`](docs/评审综述.md) — functional/review summary
+- [`docs/TRACK04_签字确认稿.md`](docs/TRACK04_签字确认稿.md) — session-boundary configuration evidence
 
 ---
 
 ## Background
 
-This project was originally developed for **犀牛鸟开源实战 · TRACK 05A / 05B**. The original task context remains useful, but the repository is being refactored so that the engineering problem can stand on its own:
-
-**protocol interoperability + state management + cache-aware LLM systems evaluation.**
+The repository originated from the 犀牛鸟开源实战 TRACK 05A / 05B protocol-conversion track. That context motivated the original deliverables, but the repository is now structured as an independently understandable LLM-systems project rather than only a competition snapshot.
 
 ---
 
-## Repository roadmap
+## License
 
-- [x] Add automated tests
-- [x] Add safe environment-variable template
-- [x] Add CI workflow
-- [x] Standardize pytest configuration
-- [ ] Rename the repository to `protocol-converter`
-- [ ] Standardize the default branch to `main`
-- [ ] Add an explicit open-source license after license choice is confirmed
-- [ ] Expand reproducible benchmark/result summaries
-- [ ] Complete real-provider validation
+Apache License 2.0. See [`LICENSE`](LICENSE).
