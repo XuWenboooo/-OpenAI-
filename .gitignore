@@ -4,6 +4,11 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# Secrets / local environment
+.env
+.env.*
+!.env.example
+
 # 运行产物（SQLite 埋点/会话库，可复现，不入库）
 data/*.db
 data/*.db-wal
