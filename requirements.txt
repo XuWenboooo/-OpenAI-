@@ -1,7 +1,3 @@
-# 协议转换网关依赖（M4/M6 运行时）
+# Runtime dependencies
 aiohttp>=3.9
 httpx>=0.27
-
-# 文档/测试辅助（开发）
-pytest>=8
-pytest-asyncio>=0.23
